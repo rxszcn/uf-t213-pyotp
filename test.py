@@ -967,5 +967,141 @@ class ParseUriTest(unittest.TestCase):
         self.assertEqual(otp.issuer, "Big Corp")
 
 
+class ParseUriParameterMatrixTest(unittest.TestCase):
+    """Cross-type parameter handling: each OTP type accepts only its own parameters."""
+
+    SECRET = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+
+    def _uri(self, otp_type, **params):
+        query = {"secret": self.SECRET}
+        query.update(params)
+        return f"otpauth://{otp_type}/Example?" + urlencode(query)
+
+    def test_cross_type_parameters_are_configuration_errors(self):
+        # (OTP type, parameter, value) triples that must not reach a constructor.
+        cases = [
+            ("totp", "counter", "1"),
+            ("totp", "counter", "0"),
+            ("hotp", "period", "30"),
+            ("hotp", "period", "60"),
+            ("steam", "counter", "0"),
+            ("steam", "counter", "5"),
+            ("steam", "algorithm", "SHA256"),
+            ("steam", "algorithm", "SHA512"),
+            ("hotp", "encoder", "steam"),
+        ]
+        for otp_type, key, value in cases:
+            kind = "totp" if otp_type == "steam" else otp_type
+            extra = {"encoder": "steam"} if otp_type == "steam" else {}
+            with self.subTest(otp_type=otp_type, parameter=key, value=value):
+                with self.assertRaises(pyotp.InvalidProvisioningURIError) as cm:
+                    pyotp.parse_uri(self._uri(kind, **extra, **{key: value}))
+                self.assertIsInstance(cm.exception, ValueError)
+                self.assertIn(key, str(cm.exception))
+
+    def test_own_type_parameters_are_accepted(self):
+        totp = pyotp.parse_uri(self._uri("totp", period="60", digits="8", algorithm="SHA256"))
+        self.assertIsInstance(totp, pyotp.TOTP)
+        self.assertEqual(totp.interval, 60)
+        self.assertEqual(totp.digits, 8)
+        self.assertIs(totp.digest, hashlib.sha256)
+
+        hotp = pyotp.parse_uri(self._uri("hotp", counter="7", digits="7", algorithm="SHA512"))
+        self.assertIsInstance(hotp, pyotp.HOTP)
+        self.assertEqual(hotp.initial_count, 7)
+        self.assertEqual(hotp.digits, 7)
+        self.assertIs(hotp.digest, hashlib.sha512)
+
+        steam = pyotp.parse_uri(self._uri("totp", encoder="steam"))
+        self.assertIsInstance(steam, pyotp.contrib.Steam)
+        self.assertEqual(steam.digits, 10)
+
+    def test_steam_ignores_period_and_digits(self):
+        # Steam codes are always 30-second, five-character TOTP; the base
+        # decoder works on 10 digits internally.
+        steam = pyotp.parse_uri(self._uri("totp", encoder="steam", period="15", digits="7"))
+        self.assertIsInstance(steam, pyotp.contrib.Steam)
+        self.assertEqual(steam.interval, 30)
+        self.assertEqual(steam.at(0), "GG5F5")
+
+    def test_steam_accepts_explicit_sha1_only(self):
+        steam = pyotp.parse_uri(self._uri("totp", encoder="steam", algorithm="SHA1"))
+        self.assertIsInstance(steam, pyotp.contrib.Steam)
+        self.assertEqual(steam.at(0), "GG5F5")
+
+    def test_every_parameter_rejected_error_is_a_configuration_error(self):
+        # None of the malformed URIs below may surface a bare TypeError.
+        malformed = [
+            self._uri("totp", counter="0"),
+            self._uri("hotp", period="30"),
+            self._uri("totp", encoder="steam", algorithm="SHA256"),
+            self._uri("totp", encoder="steam", counter="0"),
+            self._uri("hotp", encoder="steam"),
+            self._uri("totp", digits="abc"),
+            self._uri("totp", digits="5"),
+            self._uri("totp", period="abc"),
+            self._uri("hotp", counter="-1"),
+            self._uri("totp", encoder="bogus"),
+            self._uri("totp", algorithm="aes"),
+        ]
+        for uri in malformed:
+            with self.subTest(uri=uri):
+                with self.assertRaises(pyotp.InvalidProvisioningURIError):
+                    pyotp.parse_uri(uri)
+
+    def test_case_handling(self):
+        # Type, parameter names, and value spellings are case-insensitive.
+        self.assertIsInstance(pyotp.parse_uri(self._uri("TOTP")), pyotp.TOTP)
+        self.assertIsInstance(pyotp.parse_uri(self._uri("HOTP")), pyotp.HOTP)
+        self.assertIs(pyotp.parse_uri(self._uri("totp", algorithm="sha512")).digest, hashlib.sha512)
+        self.assertIsInstance(pyotp.parse_uri(self._uri("totp", encoder="Steam")), pyotp.contrib.Steam)
+
+        otp = pyotp.parse_uri(f"otpauth://totp/Example?SECRET={self.SECRET}&PERIOD=60")
+        self.assertEqual(otp.name, "Example")
+        self.assertEqual(otp.interval, 60)
+
+        # Duplicate detection uses the normalised name.
+        with self.assertRaisesRegex(pyotp.InvalidProvisioningURIError, "Duplicate secret parameter"):
+            pyotp.parse_uri(f"otpauth://totp/Example?secret={self.SECRET}&SECRET={self.SECRET}")
+
+    def test_strict_integer_spellings(self):
+        # int()'s tolerance of whitespace, signs, and underscores must not leak
+        # into URI parsing.
+        for value in ("+6", " 6", "6 ", "1_0", "0x6", "６"):
+            with self.subTest(value=value):
+                with self.assertRaises(pyotp.InvalidProvisioningURIError):
+                    pyotp.parse_uri(self._uri("totp", digits=value))
+                with self.assertRaises(pyotp.InvalidProvisioningURIError):
+                    pyotp.parse_uri(self._uri("totp", period=value))
+                with self.assertRaises(pyotp.InvalidProvisioningURIError):
+                    pyotp.parse_uri(self._uri("hotp", counter=value))
+
+    def test_negative_counter_is_rejected(self):
+        with self.assertRaisesRegex(pyotp.InvalidProvisioningURIError, "must not be negative"):
+            pyotp.parse_uri(self._uri("hotp", counter="-1"))
+
+    def test_steam_rejects_out_of_range_digits(self):
+        # digits=7 is valid otpauth but has no meaning for Steam, so it is
+        # ignored; digits=9 is not a valid otpauth value at all, so it fails.
+        pyotp.parse_uri(self._uri("totp", encoder="steam", digits="7"))
+        with self.assertRaisesRegex(pyotp.InvalidProvisioningURIError, "Digits may only be 6, 7, or 8"):
+            pyotp.parse_uri(self._uri("totp", encoder="steam", digits="9"))
+
+    def test_invalid_base32_secret_is_a_configuration_error(self):
+        for secret in ("SOME_SECRET", "JBSWY3DPEHPK3PXPJBSWY3D!"):
+            with self.subTest(secret=secret):
+                with self.assertRaises(pyotp.InvalidProvisioningURIError) as cm:
+                    pyotp.parse_uri(f"otpauth://totp/Example?secret={secret}")
+                self.assertIsInstance(cm.exception, ValueError)
+
+    def test_blank_value_counts_as_absent(self):
+        otp = pyotp.parse_uri(self._uri("totp", period=""))
+        self.assertEqual(otp.interval, 30)
+
+    def test_unknown_parameters_are_ignored(self):
+        otp = pyotp.parse_uri(self._uri("totp", image="https://example.com/x.png", custom="1"))
+        self.assertIsInstance(otp, pyotp.TOTP)
+
+
 if __name__ == "__main__":
     unittest.main()

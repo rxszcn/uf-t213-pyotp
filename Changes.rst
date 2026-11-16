@@ -1,3 +1,17 @@
+Changes for v2.13.0 (unreleased)
+================================
+
+-  Reject cross-type parameters in ``parse_uri`` instead of forwarding them to constructors that cannot accept them.
+   ``counter`` on a TOTP or Steam URI, ``period`` on an HOTP URI, ``algorithm`` on a Steam URI, and ``encoder=steam`` on an
+   HOTP URI now raise ``pyotp.InvalidProvisioningURIError``.
+
+-  Add ``pyotp.InvalidProvisioningURIError`` (a ``ValueError`` subclass) as the single error type for malformed
+   provisioning URIs, invalid parameter values, and rejected OTP configurations, so parsing a defective QR code no
+   longer surfaces a raw ``TypeError`` or ``binascii.Error``.
+
+-  Match parameter names, the OTP type, and ``algorithm``/``encoder`` values case-insensitively in ``parse_uri``, and
+   parse numeric parameters strictly (no signs, surrounding whitespace, or underscores).
+
 Changes for v2.12.0 (2026-11-15)
 ================================
 

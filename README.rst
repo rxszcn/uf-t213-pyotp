@@ -180,6 +180,16 @@ Parsing these URLs is also supported:
 
     >>> <pyotp.hotp.HOTP object at 0xFFFFFFFF>
 
+Only parameters that are meaningful for the URI's OTP type are accepted. A parameter belonging to another type
+(for example ``counter`` on a ``totp`` URI, ``period`` on an ``hotp`` URI, or ``algorithm`` on a Steam credential)
+raises ``pyotp.InvalidProvisioningURIError`` instead of being silently dropped: dropping it would import a credential
+that differs from the one the QR code describes. The same exception (a ``ValueError`` subclass) reports malformed URIs,
+invalid parameter values, and configurations the OTP classes reject, so a bad scan never surfaces a constructor
+``TypeError`` or a low-level decoder error. Unknown, vendor-specific parameters are ignored, parameter names and the
+OTP type / ``algorithm`` / ``encoder`` values are matched case-insensitively, and ``encoder=steam`` is only accepted on
+``totp`` URIs. An unsupported ``encoder`` value is rejected rather than ignored, since ignoring it would import a
+plain TOTP credential instead of the one requested.
+
 Working example
 ~~~~~~~~~~~~~~~
 
